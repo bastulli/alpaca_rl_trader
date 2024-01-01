@@ -24,7 +24,7 @@ denseLayerSize = 32
 # Assuming these values are defined somewhere in your environment
 NUM_STOCK_SYMBOLS = 28  # Replace with your actual number of stock symbols
 NUM_FEATURES = 6        # Replace with your actual number of features per stock symbol
-FRAMESTACK = 5          # Number of stacked frames
+FRAMESTACK = 5          # Number of stacked frames (history)
 
 # Define the observation space
 observation_space = spaces.Box(
