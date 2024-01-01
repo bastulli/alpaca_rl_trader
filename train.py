@@ -9,7 +9,7 @@ import torch
 from trading_game_env import TradingGameEnv
 from data.data_loader import load_data, SplitOption
 from torch.utils.tensorboard import SummaryWriter
-from neural_network import CustomNetwork
+from alpaca_rl_trader.util.neural_network import CustomNetwork
 from util.custom_eval_callback import EvalCallback
 
 # Hyperparameters for example model
