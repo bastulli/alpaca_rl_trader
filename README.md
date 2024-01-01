@@ -27,8 +27,10 @@ Welcome to Alpaca RL Trader, a reinforcement learning-based trading system that 
     APCA_API_SECRET_KEY=your_alpaca_api_secret_key 
     POLYGON_API_KEY=your_polygon_api_key
 
+6. **Download some data**  
+   Run `python data/historical_data.py` to download historical data from the Polygon API and store it in the SQL DB.
 
-6. **Run the Program**  
+7. **Run the Program**  
 - `python train.py`: Trains the model, creates a `.pth` file in the models directory, and logs to the log directory.
 - `python test.py`: Tests the model.
 - `python live.py`: Runs the model live, trading on the Alpaca paper trading account.
