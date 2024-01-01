@@ -1,7 +1,7 @@
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
-from trading_game_env import TradingGameEnv
+from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
 from data.data_loader import load_data, SplitOption
 import matplotlib.pyplot as plt
 

@@ -6,7 +6,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import torch
-from trading_game_env import TradingGameEnv
+from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
 from data.data_loader import load_data, SplitOption
 from torch.utils.tensorboard import SummaryWriter
 from alpaca_rl_trader.util.neural_network import CustomNetwork
