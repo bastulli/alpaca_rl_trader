@@ -16,3 +16,6 @@ env/
 # Other files and directories
 .idea/
 .DS_Store
+/logs/
+/models/
+historical_stock_data.db
