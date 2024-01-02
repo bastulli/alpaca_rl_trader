@@ -16,7 +16,7 @@ class CustomNetwork(BaseFeaturesExtractor):
         self.conv1 = nn.Conv1d(
             in_channels=self.num_features, out_channels=8, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv1d(8, 16, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv1d(16, 1, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv1d(16, 3, kernel_size=3, stride=1, padding=1)
 
         # Pooling layer
         self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
