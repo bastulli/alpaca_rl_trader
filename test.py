@@ -1,16 +1,16 @@
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
-from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
+from env.trading_game_env import TradingGameEnv
 from data.data_loader import load_data, SplitOption
 import matplotlib.pyplot as plt
 
 model = "PPO"
-time = 1704130232
+time = 1704149964
 model_path = f"models/{model}-{time}"
 # Change the file name if needed
 final_model_path = os.path.join(
-    model_path, "best_models/best_model_25_655231420183554.zip")
+    model_path, "best_models/best_model_25_166099219117314.zip")
 
 
 symbols = ['MMM', 'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON',
