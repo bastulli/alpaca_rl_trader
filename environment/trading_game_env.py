@@ -1,5 +1,4 @@
 from collections import deque
-import pickle
 import numpy as np
 import math
 import pygame
@@ -7,21 +6,21 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from collections import deque, OrderedDict
-import sqlite3
-
-FRAMESTACK = 7
-NUM_FEATURES = 6
 
 
 class TradingGameEnv(gym.Env):
-    def __init__(self, data_dict, initial_balance=100000.0, transaction_cost=0.0001, live_trader=None):
+    def __init__(self, data, initial_balance=100000.0, transaction_cost=0.0001, framestack=10, features=[], live_trader=None, verbose=False, rendering=False):
         super(TradingGameEnv, self).__init__()
-        self.verbose = False
-        self.rendering = False
+        self.verbose = verbose
+        self.rendering = rendering
+        self.frame_stack = framestack
+        self.features = features
+        # Add unrealized_pl_array, holdings_array
+        self.num_features = len(features) + 2
         self.min_dollar_value = 100.0
 
         # Sort data_dict by its keys
-        self.data_dict = OrderedDict(sorted(data_dict.items()))
+        self.data_dict = OrderedDict(sorted(data.items()))
 
         # Initialize
         self.initial_balance = initial_balance
@@ -34,7 +33,7 @@ class TradingGameEnv(gym.Env):
         first_ticker = next(iter(self.data_dict))
         self.length_of_data = len(self.data_dict[first_ticker]['price'])
         self.number_of_symbols = len(self.data_dict.keys())
-        self.observations = deque(maxlen=FRAMESTACK)
+        self.observations = deque(maxlen=self.frame_stack)
         print(f"Number of symbols: {self.number_of_symbols}")
         print(f" keys {self.data_dict.keys()}")
 
@@ -46,7 +45,7 @@ class TradingGameEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.number_of_symbols, NUM_FEATURES, FRAMESTACK),
+            shape=(self.number_of_symbols, self.num_features, self.frame_stack),
             dtype=np.float32
 
         )
@@ -150,12 +149,12 @@ class TradingGameEnv(gym.Env):
         self.action_space_history = []
 
         # Reset the observations deque
-        self.observations = deque(maxlen=FRAMESTACK)
+        self.observations = deque(maxlen=self.frame_stack)
 
-        # warmup up framestack
-        for i in range(FRAMESTACK):
+        # warmup up self.frame_stack
+        for i in range(self.frame_stack):
             # appends the observation to the deque
-            stacked_obs = self.next_observation(i-FRAMESTACK)
+            stacked_obs = self.next_observation(i-self.frame_stack)
 
         return stacked_obs, {}
 
@@ -185,18 +184,13 @@ class TradingGameEnv(gym.Env):
         if index is None:
             index = self.current_step
 
-        # Vectorized extraction of features
-        f_vmar_10 = np.array([self.data_dict[symbol]['f_vmar_10'][index]
-                              for symbol in self.data_dict.keys()], dtype=np.float32)
+        feature_arrays = []
 
-        f_sma_diff_10 = np.array([self.data_dict[symbol]['f_sma_diff_10'][index]
-                                  for symbol in self.data_dict.keys()], dtype=np.float32)
-
-        f_fractional_difference_price = np.array([self.data_dict[symbol]['f_fractional_difference_price'][index]
-                                                  for symbol in self.data_dict.keys()], dtype=np.float32)
-
-        f_volitilit_10 = np.array([self.data_dict[symbol]['f_volitility_10'][index]
-                                   for symbol in self.data_dict.keys()], dtype=np.float32)
+        # Dynamic extraction of features
+        for feature_name in self.features:
+            feature_array = np.array([self.data_dict[symbol][feature_name][index]
+                                      for symbol in self.data_dict.keys()], dtype=np.float32)
+            feature_arrays.append(feature_array)
 
         # Perform the division with safe check
         holdings_array = self._get_holdings_ratio()
@@ -211,14 +205,9 @@ class TradingGameEnv(gym.Env):
         unrealized_pl_array = unrealized_pl_array.astype(np.float32)
 
         # Construct the observation array for the current step
-        current_observation = np.stack([
-            unrealized_pl_array,
-            holdings_array,
-            f_vmar_10,
-            f_sma_diff_10,
-            f_fractional_difference_price,
-            f_volitilit_10
-        ], axis=0)  # Shape will be [num_features, num_symbols]
+        # Shape will be [num_features, num_symbols]
+        current_observation = np.stack(
+            [unrealized_pl_array, holdings_array] + feature_arrays, axis=0)
 
         # Transpose the observation to make it [num_symbols, num_features]
         current_observation = np.transpose(
@@ -228,7 +217,7 @@ class TradingGameEnv(gym.Env):
         self.observations.append(current_observation)
 
         # Ensure the deque is filled up to FRAMESTACK
-        while len(self.observations) < FRAMESTACK:
+        while len(self.observations) < self.frame_stack:
             self.observations.append(np.zeros_like(current_observation))
 
         # Stack the observations to create the final array
