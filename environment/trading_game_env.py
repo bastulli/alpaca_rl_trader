@@ -1,4 +1,5 @@
 from collections import deque
+import pickle
 import numpy as np
 import math
 import pygame
@@ -50,37 +51,6 @@ class TradingGameEnv(gym.Env):
 
         )
 
-        self._init_db()  # Initialize database
-
-    def _init_db(self):
-        self.conn = sqlite3.connect('trading_data.db')
-        cursor = self.conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS framestack (
-                          id INTEGER PRIMARY KEY AUTOINCREMENT,
-                          obs BLOB)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS account_info (
-                          id INTEGER PRIMARY KEY AUTOINCREMENT,
-                          balance REAL,
-                          trades TEXT)''')
-        self.conn.commit()
-
-    def _save_observation_to_db(self, obs):
-        cursor = self.conn.cursor()
-        cursor.execute("INSERT INTO framestack (obs) VALUES (?)", (obs,))
-        self.conn.commit()
-
-    def _load_observations_from_db(self):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT obs FROM framestack ORDER BY id DESC LIMIT ?", (FRAMESTACK,))
-        return cursor.fetchall()
-
-    def _save_account_info_to_db(self, balance, trades):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO account_info (balance, trades) VALUES (?, ?)", (balance, trades))
-        self.conn.commit()
-
     def step(self, action):
 
         if self.live_trader is None:
@@ -108,13 +78,6 @@ class TradingGameEnv(gym.Env):
 
         # Get the next observation
         obs = self.next_observation(self.current_step)
-
-        # Save observation to database
-        self._save_observation_to_db(obs)
-
-        # Save account information incrementally
-        trades = "Your trade data here"  # Format or retrieve trade data accordingly
-        self._save_account_info_to_db(self.balance, trades)
 
         # Check if we are done
         done = self.current_step >= self.length_of_data - 2
@@ -238,10 +201,6 @@ class TradingGameEnv(gym.Env):
         # Perform the division with safe check
         holdings_array = self._get_holdings_ratio()
 
-        # Store the holdings ratio for visualization
-        if self.rendering:
-            self.holdings_ratio_history.append(holdings_array)
-
         # Ensure the result is in float32 format
         holdings_array = holdings_array.astype(np.float32)
 
@@ -276,6 +235,14 @@ class TradingGameEnv(gym.Env):
         # This will stack the last FRAMESTACK observations along a new dimension
         # Shape will be [num_symbols, num_features, FRAMESTACK]
         stacked_obs = np.stack(self.observations, axis=-1)
+
+        # Store the holdings ratio for visualization
+        if self.rendering:
+            self.holdings_ratio_history.append(holdings_array)
+
+        if self.live_trader is not None:
+            # Save observation to database
+            self._save_observation_to_db(stacked_obs)
 
         return stacked_obs
 
