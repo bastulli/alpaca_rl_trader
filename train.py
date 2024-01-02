@@ -6,10 +6,10 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 import torch
-from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
+from env.trading_game_env import TradingGameEnv
 from data.data_loader import load_data, SplitOption
 from torch.utils.tensorboard import SummaryWriter
-from alpaca_rl_trader.util.neural_network import CustomNetwork
+from util.neural_network import CustomNetwork
 from util.custom_eval_callback import EvalCallback
 
 # Hyperparameters for example model
@@ -22,9 +22,9 @@ denseLayerSize = 32
 
 # Define observation space
 # Assuming these values are defined somewhere in your environment
-NUM_STOCK_SYMBOLS = 28  # Replace with your actual number of stock symbols
+NUM_STOCK_SYMBOLS = 31  # Replace with your actual number of stock symbols
 NUM_FEATURES = 6        # Replace with your actual number of features per stock symbol
-FRAMESTACK = 5          # Number of stacked frames (history)
+FRAMESTACK = 7          # Number of stacked frames (history)
 
 # Define the observation space
 observation_space = spaces.Box(
