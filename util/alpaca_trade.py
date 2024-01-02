@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import sqlite3
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetAssetsRequest
@@ -11,6 +12,7 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+import numpy as np
 
 from polygon import RESTClient
 import pandas as pd
@@ -22,6 +24,19 @@ class LiveTrader:
         self.stock_client = StockHistoricalDataClient(api_key, secret_key)
         self.polygon_client = RESTClient(polygon_key)
         self.symbols = symbols
+        self._init_db()  # Initialize database
+
+    def _init_db(self):
+        self.conn = sqlite3.connect('trading_data.db')
+        cursor = self.conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS framestack (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          obs BLOB)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS account_info (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          balance REAL,
+                          trades TEXT)''')
+        self.conn.commit()
 
     def buy(self, symbol, qty):
         print(f"Buying {qty} shares of {symbol}")
