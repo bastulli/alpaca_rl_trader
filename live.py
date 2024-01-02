@@ -1,8 +1,8 @@
 import os
 from stable_baselines3 import PPO
 from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
-from gym.alpaca_rl_trader.util.alpaca_trade import LiveTrader
-from tradingbot.gym.alpaca_rl_trader.data.data_loader import load_data, SplitOption
+from util.alpaca_trade import LiveTrader
+from data.data_loader import load_data, SplitOption
 from dotenv import load_dotenv
 # Load the environment file
 load_dotenv('keys.env')
