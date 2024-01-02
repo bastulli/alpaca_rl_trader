@@ -1,6 +1,6 @@
 import os
 from stable_baselines3 import PPO
-from alpaca_rl_trader.env.trading_game_env import TradingGameEnv
+from environment.trading_game_env import TradingGameEnv
 from util.alpaca_trade import LiveTrader
 from data.data_loader import load_data, SplitOption
 from dotenv import load_dotenv
