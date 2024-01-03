@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 # Configuration parameters
 FRAMESTACK = 7
 MODEL_TYPE = "PPO"
-MODEL_TIMESTAMP = "1704225259"  # Replace with the specific model timestamp
+MODEL_TIMESTAMP = "1704236034"  # Replace with the specific model timestamp
 # Replace with the specific best model number
-BEST_MODEL_NUMBER = "27_930107027757913"
+BEST_MODEL_NUMBER = "54_43038304010406"
 
 # Paths setup
 models_dir = f"models/{MODEL_TYPE}-{MODEL_TIMESTAMP}"
@@ -19,8 +19,34 @@ best_model_path = os.path.join(
 # Features and symbols setup
 features = ['f_vmar_10', 'f_volitility_10', 'f_sma_diff_10',
             'f_percentage_change_zscore', 'f_fractional_difference_price']
-symbols = ['MMM', 'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON',
-           'IBM', 'INTC', 'JNJ', 'JPM', 'MCD', 'MRK', 'MSFT', 'NKE', 'PG', 'CRM', 'TRV', 'UNH', 'VZ', 'V', 'WMT', 'DOW', 'WBA', 'NVDA']
+
+symbols = ['AAPL',  # Apple
+           'MSFT',  # Microsoft
+           'INTC',  # Intel
+           'NVDA',  # Nvidia
+           'JPM',   # JPMorgan Chase
+           'GS',    # Goldman Sachs
+           'BAC',   # Bank of America
+           'KO',    # Coca-Cola
+           'PEP',   # PepsiCo
+           'PG',    # Procter & Gamble
+           'WMT',   # Walmart
+           'PFE',   # Pfizer
+           'JNJ',   # Johnson & Johnson
+           'MRK',   # Merck
+           'XOM',   # ExxonMobil
+           'CVX',   # Chevron
+           'BP',    # BP
+           'AMZN',  # Amazon
+           'BABA',  # Alibaba
+           'T',     # AT&T
+           'VZ',    # Verizon
+           'DUK',   # Duke Energy
+           'SO',    # Southern Company
+           'TSLA',  # Tesla
+           'GM',    # General Motors
+           'F',     # Ford
+           'BA']    # Boeing
 
 # Load test data
 test_data = load_data(

@@ -15,19 +15,45 @@ from util.neural_network import CustomNetwork
 from util.custom_eval_callback import EvalCallback
 
 # Configuration parameters and hyperparameters
-NUM_STOCK_SYMBOLS = 31  # Replace with your actual number of stock symbols
 FRAMESTACK = 7  # Number of stacked frames (history)
 BATCH_SIZE = 64
-DENSE_LAYER_SIZE = 128
+DENSE_LAYER_SIZE = 64
 LEARNING_RATE = 0.0001
 TOTAL_TIMESTEPS = 5000000
 
 features = ['f_vmar_10', 'f_volitility_10', 'f_sma_diff_10',
             'f_percentage_change_zscore', 'f_fractional_difference_price']
-symbols = ['MMM', 'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON',
-           'IBM', 'INTC', 'JNJ', 'JPM', 'MCD', 'MRK', 'MSFT', 'NKE', 'PG', 'CRM', 'TRV', 'UNH', 'VZ', 'V', 'WMT', 'DOW', 'WBA', 'NVDA']
+
+symbols = ['AAPL',  # Apple
+           'MSFT',  # Microsoft
+           'INTC',  # Intel
+           'NVDA',  # Nvidia
+           'JPM',   # JPMorgan Chase
+           'GS',    # Goldman Sachs
+           'BAC',   # Bank of America
+           'KO',    # Coca-Cola
+           'PEP',   # PepsiCo
+           'PG',    # Procter & Gamble
+           'WMT',   # Walmart
+           'PFE',   # Pfizer
+           'JNJ',   # Johnson & Johnson
+           'MRK',   # Merck
+           'XOM',   # ExxonMobil
+           'CVX',   # Chevron
+           'BP',    # BP
+           'AMZN',  # Amazon
+           'BABA',  # Alibaba
+           'T',     # AT&T
+           'VZ',    # Verizon
+           'DUK',   # Duke Energy
+           'SO',    # Southern Company
+           'TSLA',  # Tesla
+           'GM',    # General Motors
+           'F',     # Ford
+           'BA']    # Boeing
 
 NUM_FEATURES = len(features) + 2  # Add unrealized_pl_array, holdings_array
+NUM_STOCK_SYMBOLS = len(symbols)
 
 # Define the observation space
 observation_space = spaces.Box(
