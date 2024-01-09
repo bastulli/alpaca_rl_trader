@@ -1,6 +1,8 @@
 import os
+import time
 from stable_baselines3 import PPO
 from dotenv import load_dotenv
+import schedule
 
 # Custom imports
 from environment.trading_game_env import TradingGameEnv
@@ -27,12 +29,17 @@ api_key = os.environ.get("APCA_API_KEY_ID")
 secret_key = os.environ.get("APCA_API_SECRET_KEY")
 polygon_key = os.environ.get("POLYGON_API_KEY")
 
-# Symbols for live trading
-symbols = ['MMM', 'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CVX', 'CSCO', 'KO', 'DIS', 'GS', 'HD', 'HON',
-           'IBM', 'INTC', 'JNJ', 'JPM', 'MCD', 'MRK', 'MSFT', 'NKE', 'PG', 'CRM', 'TRV', 'UNH', 'VZ', 'V', 'WMT']
+crypto_symbols = ['BAT', 'BCH', 'BTC', 'CRV',
+                  'DOT', 'ETH', 'GRT', 'LINK', 'LTC', 'MKR', 'UNI', 'XTZ']
+# Using list comprehension to modify each element in the list
+symbols = ['X:' + symbol + 'USD' for symbol in crypto_symbols]
+
+table_name = 'crypto_data_hourly'
 
 # Load and create the trading environment
-test_data = load_data(ratio=0.8, split_option=SplitOption.TEST_SPLIT)
+test_data = load_data(ratio=0.8, split_option=SplitOption.TEST_SPLIT,
+                      symbols=symbols, table_name=table_name)
+
 env = TradingGameEnv(test_data)
 model = PPO.load(final_model_path, env=env)
 
@@ -43,22 +50,27 @@ live_trader = LiveTrader(api_key, secret_key, polygon_key, symbols)
 data = load_data(ratio=0.8, split_option=SplitOption.NO_SPLIT,
                  symbols=symbols, trim_data=True)
 
-env = TradingGameEnv(data_dict=data, live_trader=live_trader, symbols=symbols)
+env = TradingGameEnv(
+    data_dict=data, live_trader=live_trader, symbols=symbols)
 env.reset()
 env.verbose = True
 
-# Main trading loop
-try:
-    while True:
-        # Update environment with new live data
-        env.sync_with_live_trader(live_trader)  # sync cash and positions
-        # check for new data and update database file
+
+def run_bot():
+    """
+    Main function to run the trading bot.
+    """
+    try:
+        # Check for new data and update database file
         fetch_data_for_ticker(symbols)
-        # load new data into environment from database file
+        # Load new data into environment from database file
         new_data = load_data(split_option=SplitOption.NO_SPLIT,
                              symbols=symbols, trim_data=True)
 
-        # update environment with new data
+        # Update environment with new live data
+        env.sync_with_live_trader(live_trader)  # sync cash and positions
+
+        # Update environment with new data
         env.update_data(new_data)
 
         # Get observation (stacked data features, prices and history)
@@ -74,8 +86,21 @@ try:
         # Uncomment to render the environment
         # env.render()
 
-except KeyboardInterrupt:
-    print("Live trading stopped by user.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-finally:
-    env.close()  # Clean up the environment
+    finally:
+        env.close()  # Clean up the environment
+
+
+# Schedule the bot to run at the beginning of every hour (modify as needed)
+schedule.every().hour.do(run_bot)
+
+# Main loop
+try:
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    print("Scheduled trading stopped by user.")

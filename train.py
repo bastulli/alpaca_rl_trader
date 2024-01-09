@@ -15,44 +15,53 @@ from util.neural_network import CustomNetwork
 from util.custom_eval_callback import EvalCallback
 
 # Configuration parameters and hyperparameters
-FRAMESTACK = 7  # Number of stacked frames (history)
+FRAMESTACK = 5  # Number of stacked frames (history)s
 BATCH_SIZE = 64
-DENSE_LAYER_SIZE = 64
+DENSE_LAYER_SIZE = 32
 LEARNING_RATE = 0.0001
 TOTAL_TIMESTEPS = 5000000
 
-features = ['f_vmar_10', 'f_volitility_10', 'f_sma_diff_10',
-            'f_percentage_change_zscore', 'f_fractional_difference_price']
+features = ['f_percentage_change_zscore', 'f_dollar_volume_zscore', 'f_fractional_difference_price', 'f_vmar',
+            'f_cumulative_return', 'f_log_pct_change', 'f_rsi', 'f_bbands', 'f_macd', 'f_obv', 'f_historical_volatility']
 
-symbols = ['AAPL',  # Apple
-           'MSFT',  # Microsoft
-           'INTC',  # Intel
-           'NVDA',  # Nvidia
-           'JPM',   # JPMorgan Chase
-           'GS',    # Goldman Sachs
-           'BAC',   # Bank of America
-           'KO',    # Coca-Cola
-           'PEP',   # PepsiCo
-           'PG',    # Procter & Gamble
-           'WMT',   # Walmart
-           'PFE',   # Pfizer
-           'JNJ',   # Johnson & Johnson
-           'MRK',   # Merck
-           'XOM',   # ExxonMobil
-           'CVX',   # Chevron
-           'BP',    # BP
-           'AMZN',  # Amazon
-           'BABA',  # Alibaba
-           'T',     # AT&T
-           'VZ',    # Verizon
-           'DUK',   # Duke Energy
-           'SO',    # Southern Company
-           'TSLA',  # Tesla
-           'GM',    # General Motors
-           'F',     # Ford
-           'BA']    # Boeing
+# symbols = ['AAPL',  # Apple
+#            'MSFT',  # Microsoft
+#            'INTC',  # Intel
+#            'NVDA',  # Nvidia
+#            'JPM',   # JPMorgan Chase
+#            'GS',    # Goldman Sachs
+#            'BAC',   # Bank of America
+#            'KO',    # Coca-Cola
+#            'PEP',   # PepsiCo
+#            'PG',    # Procter & Gamble
+#            'WMT',   # Walmart
+#            'PFE',   # Pfizer
+#            'JNJ',   # Johnson & Johnson
+#            'MRK',   # Merck
+#            'XOM',   # ExxonMobil
+#            'CVX',   # Chevron
+#            'BP',    # BP
+#            'AMZN',  # Amazon
+#            'BABA',  # Alibaba
+#            'T',     # AT&T
+#            'VZ',    # Verizon
+#            'DUK',   # Duke Energy
+#            'SO',    # Southern Company
+#            'TSLA',  # Tesla
+#            'GM',    # General Motors
+#            'F',     # Ford
+#            'BA']    # Boeing
 
-NUM_FEATURES = len(features) + 2  # Add unrealized_pl_array, holdings_array
+crypto_symbols = ['BAT', 'BCH', 'BTC', 'CRV',
+                  'DOT', 'ETH', 'GRT', 'LINK', 'LTC', 'MKR', 'UNI', 'XTZ']
+
+# Using list comprehension to modify each element in the list
+symbols = ['X:' + symbol + 'USD' for symbol in crypto_symbols]
+
+table_name = 'crypto_data_hourly'
+
+# Add unrealized_pl_array, holdings_array, max_drawdown_array
+NUM_FEATURES = len(features) + 3
 NUM_STOCK_SYMBOLS = len(symbols)
 
 # Define the observation space
@@ -87,14 +96,16 @@ print(f"Model architecture:\n{model_temp}")
 
 # Loading data
 train_data = load_data(
-    ratio=0.8, split_option=SplitOption.TRAIN_SPLIT, symbols=symbols)
+    ratio=0.8, split_option=SplitOption.TRAIN_SPLIT, symbols=symbols, table_name=table_name)
+
 test_data = load_data(
-    ratio=0.8, split_option=SplitOption.TEST_SPLIT, symbols=symbols)
+    ratio=0.8, split_option=SplitOption.TEST_SPLIT, symbols=symbols, table_name=table_name)
 
 # Environment setup
 env = TradingGameEnv(data=train_data, features=features, framestack=FRAMESTACK)
 test_env = TradingGameEnv(
     data=test_data, features=features, framestack=FRAMESTACK)
+test_env.reset(random_reset=False)
 check_env(env)  # Optional: Check if the environment follows the Gym interface
 
 # PPO model setup
@@ -103,7 +114,7 @@ policy_kwargs = {
     "features_extractor_kwargs": {"features_dim": DENSE_LAYER_SIZE}
 }
 
-model = PPO('CnnPolicy', env, verbose=1, learning_rate=LEARNING_RATE,
+model = PPO('CnnPolicy', env, verbose=1, learning_rate=LEARNING_RATE, n_steps=2048,
             tensorboard_log=logdir, batch_size=BATCH_SIZE, policy_kwargs=policy_kwargs)
 
 # Callbacks for model saving and evaluation

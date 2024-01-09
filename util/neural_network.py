@@ -13,18 +13,20 @@ class CustomNetwork(BaseFeaturesExtractor):
         # 1D CNN layers for processing each feature across the frame stack
         # These layers will be applied to each symbol separately
         # They will also act as an encoder for the features
+        # Input is [batch, features, frame_stack] (frame_stack is the time dimension or history of features)
         self.conv1 = nn.Conv1d(
-            in_channels=self.num_features, out_channels=8, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv1d(8, 16, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv1d(16, 3, kernel_size=3, stride=1, padding=1)
+            in_channels=self.num_features, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv1d(32, 8, kernel_size=3, stride=1, padding=1)
 
         # Pooling layer
         self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
 
         # Calculate the output size after convolutions
+        # update pooling here if added or removed
         dummy_input = torch.zeros(1, self.num_features, self.frame_stack_size)
         dummy_output = self.pool(self.conv3(
-            self.pool(self.conv2(self.conv1(dummy_input)))))
+            self.conv2(self.pool(self.conv1(dummy_input)))))
 
         # Multiply by the number of symbols
         conv_output_size = dummy_output.numel() * self.num_symbols
@@ -33,6 +35,9 @@ class CustomNetwork(BaseFeaturesExtractor):
         self.fc1 = nn.Linear(conv_output_size, 64)
         self.fc2 = nn.Linear(64, features_dim)
         self.relu = nn.ReLU()
+        # Use sigmoid for the last layer to get values between 0 and 1
+        self.sigmoid = nn.Sigmoid()
+        # Use tanh for the last layer to get values between -1 and 1
         self.tanh = nn.Tanh()
 
     def forward(self, observations):
@@ -44,6 +49,7 @@ class CustomNetwork(BaseFeaturesExtractor):
         x = observations.view(batch_size * self.num_symbols,
                               self.num_features, self.frame_stack_size)
 
+        # note add or remove pooling layers if large or small data (frame stack vs features)
         x = self.relu(self.conv1(x))
         x = self.pool(x)
         x = self.relu(self.conv2(x))
@@ -57,9 +63,15 @@ class CustomNetwork(BaseFeaturesExtractor):
 
         # Fully connected layers
         x = self.relu(self.fc1(x))
+
+        # Use sigmoid for the last layer to get values between 0 and 1
+        # or use tanh for the last layer to get values between -1 and 1
         x = self.tanh(self.fc2(x))
+
         return x
 
+
+# another architecture to try
 
 # class CustomNetwork(BaseFeaturesExtractor):
 #     def __init__(self, observation_space, features_dim):

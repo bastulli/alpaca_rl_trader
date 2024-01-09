@@ -9,18 +9,19 @@ from collections import deque, OrderedDict
 
 
 class TradingGameEnv(gym.Env):
-    def __init__(self, data, initial_balance=100000.0, transaction_cost=0.0001, framestack=10, features=[], live_trader=None, verbose=False, rendering=False):
+    def __init__(self, data, initial_balance=100000.0, transaction_cost=0.00025, framestack=10, features=[], live_trader=None, verbose=False, rendering=False):
         super(TradingGameEnv, self).__init__()
         self.verbose = verbose
         self.rendering = rendering
         self.frame_stack = framestack
         self.features = features
-        # Add unrealized_pl_array, holdings_array
-        self.num_features = len(features) + 2
+        # Add unrealized_pl_array, holdings_array, max_drawdown
+        self.num_features = len(features) + 3
         self.min_dollar_value = 100.0
 
         # Sort data_dict by its keys
-        self.data_dict = OrderedDict(sorted(data.items()))
+        self.time_series_data = OrderedDict(sorted(data.items()))
+        self.symbol_names = list(self.time_series_data.keys())
 
         # Initialize
         self.initial_balance = initial_balance
@@ -30,15 +31,16 @@ class TradingGameEnv(gym.Env):
         self.live_trader = live_trader
 
         # Get the first ticker key from the sorted dictionary
-        first_ticker = next(iter(self.data_dict))
-        self.length_of_data = len(self.data_dict[first_ticker]['price'])
-        self.number_of_symbols = len(self.data_dict.keys())
+        first_ticker = next(iter(self.time_series_data))
+        self.length_of_data = len(self.time_series_data[first_ticker]['price'])
+        self.number_of_symbols = len(self.time_series_data.keys())
         self.observations = deque(maxlen=self.frame_stack)
+
         print(f"Number of symbols: {self.number_of_symbols}")
-        print(f" keys {self.data_dict.keys()}")
+        print(f" keys {self.time_series_data.keys()}")
 
         # Action space is a tuple of (allocation amount)
-        self.action_space = spaces.Box(low=0, high=1, shape=(
+        self.action_space = spaces.Box(low=-1, high=1, shape=(
             self.number_of_symbols,), dtype=np.float32)
 
         # Define the observation space
@@ -50,6 +52,9 @@ class TradingGameEnv(gym.Env):
 
         )
 
+        if self.rendering:
+            self.initialize_pygame()
+
     def step(self, action):
 
         if self.live_trader is None:
@@ -59,21 +64,34 @@ class TradingGameEnv(gym.Env):
         # Take action
         self._take_action(action)
 
-        if self.rendering:
-            self.action_space_history.append(action)
+        # Calculate total portfolio value
+        current_portfolio_value = self._calculate_total_portfolio_value()
 
-        # Update the maximum portfolio value
-        self.max_portfolio_value = max(
-            self.max_portfolio_value, self.last_portfolio_value)
+        # Calculate logarithmic return of the strategy
+        strategy_log_return = self._calculate_log_return(
+            current_portfolio_value)
+
+        # Compute average performance of an evenly split portfolio
+        benchmark_log_return = self._calculate_benchmark_log_return()
 
         # Calculate current drawdown
-        current_drawdown = (self.max_portfolio_value -
-                            self.last_portfolio_value) / self.max_portfolio_value
-        self.max_drawdown = max(self.max_drawdown, current_drawdown)
+        self.max_drawdown = self._calculate_drawdown(current_portfolio_value)
+
+        # Update running totals and history for strategy and benchmark
+        self._update_running_totals(strategy_log_return, benchmark_log_return)
 
         # Calculate reward
-        reward = self._calculate_reward()
+        reward = self._calculate_reward(
+            strategy_log_return, benchmark_log_return)
         self.cumulative_reward += reward
+
+        # make sure its after reward calculation
+        self.last_portfolio_value = current_portfolio_value
+
+        # Update history for rendering if enabled
+        if self.rendering:
+            self.action_space_history.append(action)
+            self._update_rendering_history(current_portfolio_value)
 
         # Get the next observation
         obs = self.next_observation(self.current_step)
@@ -94,8 +112,8 @@ class TradingGameEnv(gym.Env):
                 (total_portfolio_value - self.initial_balance) / self.initial_balance) * 100
 
             # Step 1: Calculate cumulative log returns for each symbol
-            cumulative_log_return = np.array([self.data_dict[symbol]['log_pct_change'].cumsum()
-                                              for symbol in self.data_dict.keys()], dtype=np.float32)
+            cumulative_log_return = np.array([self.time_series_data[symbol]['log_pct_change'].cumsum()
+                                              for symbol in self.time_series_data.keys()], dtype=np.float32)
 
             # Step 2: Calculate the final cumulative log returns for each symbol
             final_cumulative_log_returns = cumulative_log_return[:, -1]
@@ -118,12 +136,17 @@ class TradingGameEnv(gym.Env):
 
         return obs, reward, done, False, {}
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, random_reset=True):
         super().reset(seed=seed)
 
         if self.live_trader is None:
             # Reset the current step
-            self.current_step = 1
+            if random_reset:
+                self.current_step = np.random.randint(
+                    self.frame_stack, self.length_of_data - 2)
+                print(f"Random reset to step {self.current_step}")
+            else:
+                self.current_step = self.frame_stack
         else:
             # set step to be last datapoint every time
             self.current_step = -1
@@ -135,16 +158,29 @@ class TradingGameEnv(gym.Env):
         self.max_portfolio_value = init_balance
 
         # Reset the order history
-        self.order_history = {symbol: {
-            'qty': 0, 'avg_entry_price': 0} for symbol in self.data_dict.keys()}
+        self.order_history = {
+            symbol: {
+                'qty': 0,
+                'avg_entry_price': 0,
+                'unrealized_pl': 0,
+                'holdings_ratio': 0,
+                'prev_unrealized_pl': 0,
+                'percentage_change': 0
+
+            } for symbol in self.time_series_data.keys()
+        }
 
         # Reset the cumulative reward and max drawdown
         self.cumulative_reward = 0
         self.max_drawdown = 0
-        self.last_drawdown = 0
+        self.highest_portfolio_value = 0
+        self.running_benchmark = 0
+        self.running_strategy = 0
 
         # Reset tracking for visualization (rendering)
         self.portfolio_value_history = []
+        self.benchmark_history = []
+        self.strategy_history = []
         self.holdings_ratio_history = []
         self.action_space_history = []
 
@@ -159,12 +195,9 @@ class TradingGameEnv(gym.Env):
         return stacked_obs, {}
 
     def update_data(self, new_data):
-        # Update self.data_dict with new_data
-        for symbol in new_data:
-            if symbol in self.data_dict:
-                for feature in new_data[symbol]:
-                    self.data_dict[symbol][feature] = np.append(
-                        self.data_dict[symbol][feature], new_data[symbol][feature])[-self.length_of_data:]
+        # Sort data_dict by its keys
+        # Update self.time_series_data with new_data
+        self.time_series_data = OrderedDict(sorted(new_data.items()))
 
     def sync_with_live_trader(self):
         account_info = self.live_trader.get_account()
@@ -188,30 +221,39 @@ class TradingGameEnv(gym.Env):
 
         # Dynamic extraction of features
         for feature_name in self.features:
-            feature_array = np.array([self.data_dict[symbol][feature_name][index]
-                                      for symbol in self.data_dict.keys()], dtype=np.float32)
+            feature_array = np.array([self.time_series_data[symbol][feature_name][index]
+                                      for symbol in self.time_series_data.keys()], dtype=np.float32)
             feature_arrays.append(feature_array)
 
-        # Perform the division with safe check
-        holdings_array = self._get_holdings_ratio()
+        # get holdings ratio
+        holdings_array = np.array([self.order_history[symbol]['holdings_ratio']
+                                  for symbol in self.time_series_data.keys()])
 
         # Ensure the result is in float32 format
         holdings_array = holdings_array.astype(np.float32)
 
-        # Calculate unrealized P/L
-        unrealized_pl_array = self._calculate_unrealized_pl()
+        # get unrealized P/L
+        unrealized_pl_array = np.array(
+            [self.order_history[symbol]['unrealized_pl'] for symbol in self.time_series_data.keys()]) * 10  # increase scale for ml
 
         # Ensure the result is in float32 format
         unrealized_pl_array = unrealized_pl_array.astype(np.float32)
 
+        # get pl percentage change
+        percentage_change = np.array(
+            [self.order_history[symbol]['percentage_change'] for symbol in self.time_series_data.keys()]) * 10  # increase scale for ml
+
+        # Ensure the result is in float32 format
+        percentage_change = percentage_change.astype(np.float32)
+
         # Construct the observation array for the current step
         # Shape will be [num_features, num_symbols]
         current_observation = np.stack(
-            [unrealized_pl_array, holdings_array] + feature_arrays, axis=0)
+            [percentage_change, unrealized_pl_array, holdings_array] + feature_arrays, axis=0)
 
         # Transpose the observation to make it [num_symbols, num_features]
         current_observation = np.transpose(
-            np.clip(current_observation, -3, 3), (1, 0))
+            np.clip(current_observation, -5, 5), (1, 0))
 
         # Add the current observation to the deque
         self.observations.append(current_observation)
@@ -229,118 +271,94 @@ class TradingGameEnv(gym.Env):
         if self.rendering:
             self.holdings_ratio_history.append(holdings_array)
 
-        if self.live_trader is not None:
-            # Save observation to database
-            self._save_observation_to_db(stacked_obs)
-
         return stacked_obs
 
-    def _get_holdings_ratio(self):
+    def _get_holdings_ratio_for_symbol(self, symbol):
+        # Calculate holdings ratio for a specific symbol
+        total_portfolio_value = self._calculate_total_portfolio_value()
+        current_price = self.time_series_data[symbol]['price'][self.current_step]
+        current_investment = self.order_history[symbol]['qty'] * current_price
 
-        # Vectorized extraction of current prices
-        current_prices = np.array([self.data_dict[symbol]['price'][self.current_step]
-                                   for symbol in self.data_dict.keys()], dtype=np.float32)
+        holdings_ratio = current_investment / \
+            total_portfolio_value if total_portfolio_value > 0 else 0
+        return holdings_ratio
 
-        # Vectorized calculations of quantities and current investments
-        quantities = np.array([self.order_history[symbol]['qty']
-                               for symbol in self.data_dict.keys()], dtype=np.float32)
+    def _calculate_unrealized_pl_for_symbol(self, symbol):
+        # Calculate unrealized P/L for a specific symbol
+        qty = self.order_history[symbol]['qty']
+        current_price = self.time_series_data[symbol]['price'][self.current_step]
+        avg_entry_price = self.order_history[symbol]['avg_entry_price']
 
-        current_investments = quantities * current_prices
+        # Calculate market values and total P/L
+        market_value = qty * current_price
+        total_pl = market_value - (qty * avg_entry_price)
 
-        # Calculate total portfolio value
-        total_portfolio_value = self.balance + np.sum(current_investments)
+        # Safe division with np.divide, handling division by zero
+        denominator = qty * avg_entry_price
+        unrealized_pl = np.divide(total_pl, denominator, out=np.zeros_like(
+            denominator, dtype=np.float64), where=denominator != 0)  # * 100
 
-        # Calculate the investment ratio for each symbol in the portfolio
-        portfolio_ratios = np.divide(current_investments, total_portfolio_value,
-                                     out=np.zeros_like(
-                                         current_investments, dtype=np.float32),
-                                     where=(total_portfolio_value > 0))
+        return unrealized_pl
 
-        return portfolio_ratios
+    def _calculate_unrealized_pl_percentage_change(self, symbol):
+        # Previous unrealized P/L
+        prev_unrealized_pl = self.order_history[symbol]['prev_unrealized_pl']
+
+        # Current unrealized P/L (from your existing method)
+        current_unrealized_pl = self._calculate_unrealized_pl_for_symbol(
+            symbol)
+
+        # Calculate percentage change
+        if prev_unrealized_pl != 0:
+            percentage_change = current_unrealized_pl - prev_unrealized_pl
+        else:
+            percentage_change = 0
+
+        # Update the order history with the current unrealized P/L
+        self.order_history[symbol]['prev_unrealized_pl'] = current_unrealized_pl
+
+        return percentage_change
+
+    def _scale_action_vector(self, action_vector):
+        # output is tanh, we want deadzone safespace between -0.5 and -1
+        # Scale values from [-0.5, 1] to [0, 1]
+        min_value = -0.5
+        max_value = 1
+
+        return np.clip((action_vector - min_value) / (max_value - min_value), 0, 1)
 
     def _normalize_action_vector(self, action_vector):
-        # Find the maximum value in the action vector
-        max_value = np.max(action_vector)
+        # scale sum of action vector to 1
+        action_vector_sum = np.sum(action_vector)
+        action_vector = action_vector / action_vector_sum
 
-        # Calculate the sum of the non-zero elements
-        non_zero_sum = np.sum(action_vector)
+        return action_vector
 
-        # Avoid division by zero
-        if non_zero_sum == 0:
-            return action_vector
-
-        # Normalize non-zero elements while maintaining their ratio and adjusting to the max value
-        normalized_action_vector = action_vector / non_zero_sum * max_value
-
-        return normalized_action_vector
-
-    def _bin_action_values(self, action_vector, skip_first=False):
+    def _bin_action_values(self, action_vector):
         # Define the bin edges
         # max is never 1 to dissallow 100% utilization of the portfolio
-        bins = np.arange(0, 1.0, 0.01)
-
-        # Check if the first element needs to be skipped
-        if skip_first and len(action_vector) > 0:
-            # Skip binning the first element
-            first_element = action_vector[0]
-            rest_of_vector = action_vector[1:]
-
-            # Reshape the rest of the vector for broadcasting
-            rest_of_vector_reshaped = rest_of_vector.reshape(-1, 1)
-
-            # Calculate the absolute differences for the rest of the vector
-            abs_diff = np.abs(rest_of_vector_reshaped - bins)
-
-            # Find the indices of the closest bin edge for each remaining action value
-            closest_bin_indices = np.argmin(abs_diff, axis=1)
-
-            # Assign the closest bin value
-            binned_rest_of_vector = bins[closest_bin_indices]
-
-            # Combine the first element with the binned rest of the vector
-            binned_action_vector = np.concatenate(
-                [[first_element], binned_rest_of_vector])
-        else:
-            # Bin the entire vector as before
-            action_vector_reshaped = action_vector.reshape(-1, 1)
-            abs_diff = np.abs(action_vector_reshaped - bins)
-            closest_bin_indices = np.argmin(abs_diff, axis=1)
-            binned_action_vector = bins[closest_bin_indices]
+        bins = np.arange(0, 1.0, 0.025)
+        action_vector_reshaped = action_vector.reshape(-1, 1)
+        abs_diff = np.abs(action_vector_reshaped - bins)
+        closest_bin_indices = np.argmin(abs_diff, axis=1)
+        binned_action_vector = bins[closest_bin_indices]
 
         return binned_action_vector
 
     def _take_action(self, action):
-
-        # Normalize and bin the action values as before
+        action = self._scale_action_vector(action)
         action = self._normalize_action_vector(action)
-
-        # Bin the action values
         action = self._bin_action_values(action)
-
-        # get the current holdings ratio
-        holdings_ratio = self._get_holdings_ratio()
-
-        # Bin the holding values
-        # we skip the binning first element because we should sell
-        # if action is 0 while the current holding is not 0
-        holdings_ratio = self._bin_action_values(
-            holdings_ratio, skip_first=True)
 
         # Calculate total portfolio value (buying and selling might change the portfolio value)
         # might need to update this for each symbol after buying and selling
         total_portfolio_value = self._calculate_total_portfolio_value()
 
-        if self.verbose:
-            for i, symbol in enumerate(self.data_dict.keys()):
-                print(
-                    f"{symbol} - Action: {action[i]:.2f}, Holdings: {holdings_ratio[i]:.2f}, dollar value: {holdings_ratio[i] * total_portfolio_value:.2f}")
-            print(f'Total portfolio value: {total_portfolio_value:.2f}')
-
         # First, process all sell actions
         for symbol_idx in range(self.number_of_symbols):
-            symbol = list(self.data_dict.keys())[symbol_idx]
+            symbol = list(self.time_series_data.keys())[symbol_idx]
             desired_percentage = action[symbol_idx]
-            current_percentage = holdings_ratio[symbol_idx]
+            current_percentage = self.order_history[symbol]['holdings_ratio']
 
             # Execute sell action if desired percentage less than current percentage
             if desired_percentage < current_percentage:
@@ -348,20 +366,31 @@ class TradingGameEnv(gym.Env):
 
         # Next, process all buy actions
         for symbol_idx in range(self.number_of_symbols):
-            symbol = list(self.data_dict.keys())[symbol_idx]
+            symbol = list(self.time_series_data.keys())[symbol_idx]
             desired_percentage = action[symbol_idx]
-            current_percentage = holdings_ratio[symbol_idx]
+            current_percentage = self.order_history[symbol]['holdings_ratio']
 
             # Execute buy action if current holdings less than desired percentage
             if current_percentage < desired_percentage:
                 self._buy(symbol, desired_percentage, total_portfolio_value)
+
+        # After processing the actions, update the unrealized PL and holdings ratio
+        for symbol in self.time_series_data.keys():
+            self.order_history[symbol]['unrealized_pl'] = self._calculate_unrealized_pl_for_symbol(
+                symbol)
+
+            self.order_history[symbol]['percentage_change'] = self._calculate_unrealized_pl_percentage_change(
+                symbol)
+
+            self.order_history[symbol]['holdings_ratio'] = self._get_holdings_ratio_for_symbol(
+                symbol)
 
     def _sell(self, symbol, desired_percentage, total_portfolio_value):
         # Clip the desired percentage to make sure it's between 0 and 1
         desired_percentage = np.clip(desired_percentage, 0, 1)
 
         # get the current price and quantity for symbol
-        current_price = self.data_dict[symbol]["price"][self.current_step]
+        current_price = self.time_series_data[symbol]["price"][self.current_step]
         current_quantity = self.order_history[symbol]['qty']
         # Current dollar amount invested in this symbol
         current_dollar_amount = current_quantity * current_price
@@ -402,6 +431,10 @@ class TradingGameEnv(gym.Env):
         # Update the average entry price if all shares are sold
         if self.order_history[symbol]['qty'] <= 0:
             self.order_history[symbol]['avg_entry_price'] = 0
+            self.order_history[symbol]['percentage_change'] = 0
+            self.order_history[symbol]['prev_unrealized_pl'] = 0
+            self.order_history[symbol]['holdings_ratio'] = 0
+            self.order_history[symbol]['unrealized_pl'] = 0
 
         realized_profit = (current_price - average_entry_price) * \
             sell_quantity - (sell_dollar_amount * self.transaction_cost)
@@ -414,7 +447,7 @@ class TradingGameEnv(gym.Env):
         desired_percentage = np.clip(desired_percentage, 0, 1)
 
         # Current price for this symbol and current quantity
-        current_price = self.data_dict[symbol]["price"][self.current_step]
+        current_price = self.time_series_data[symbol]["price"][self.current_step]
         current_quantity = self.order_history[symbol]['qty']
 
         # Current dollar amount invested in this symbol
@@ -456,35 +489,13 @@ class TradingGameEnv(gym.Env):
                 print(
                     f"Bought {purchased_quantity} shares of {symbol} at ${current_price:.2f} for a cost of ${total_cost:.2f}")
 
-    def _calculate_unrealized_pl(self):
-        # Extract quantities, current prices, and average entry prices for all symbols
-        quantities = np.array([self.order_history[symbol]['qty']
-                               for symbol in self.data_dict.keys()])
-
-        current_prices = np.array(
-            [self.data_dict[symbol]['price'][self.current_step] for symbol in self.data_dict.keys()])
-
-        average_entry_prices = np.array(
-            [self.order_history[symbol]['avg_entry_price'] for symbol in self.data_dict.keys()])
-
-        # Calculate market values and total P/L
-        market_values = quantities * current_prices
-        total_pl = market_values - (quantities * average_entry_prices)
-
-        # Safe division with np.divide, handling division by zero
-        denominator = quantities * average_entry_prices
-        unrealized_pl = np.divide(total_pl, denominator, out=np.zeros_like(
-            denominator, dtype=np.float64), where=denominator != 0)  # * 100
-
-        return unrealized_pl
-
     def _calculate_total_portfolio_value(self):
         # Extract quantities and current prices for all symbols
         quantities = np.array([self.order_history[symbol]['qty']
-                              for symbol in self.data_dict.keys()])
+                              for symbol in self.time_series_data.keys()])
 
         current_prices = np.array(
-            [self.data_dict[symbol]['price'][self.current_step] for symbol in self.data_dict.keys()])
+            [self.time_series_data[symbol]['price'][self.current_step] for symbol in self.time_series_data.keys()])
 
         # Calculate total portfolio value
         portfolio_value = self.balance + np.sum(quantities * current_prices)
@@ -492,26 +503,48 @@ class TradingGameEnv(gym.Env):
         # return dollar value
         return portfolio_value
 
-    def _calculate_reward(self):
-        current_portfolio_value = self._calculate_total_portfolio_value()
-        if self.last_portfolio_value > 0:
-            # Calculate the logarithmic return
-            log_return = math.log(
-                current_portfolio_value / self.last_portfolio_value)
+    def _calculate_drawdown(self, current_portfolio_value):
+        if current_portfolio_value > self.highest_portfolio_value:
+            self.highest_portfolio_value = current_portfolio_value
+        drawdown = (self.highest_portfolio_value -
+                    current_portfolio_value) / self.highest_portfolio_value
+        return drawdown if drawdown > 0 else 0  # Return only positive drawdowns
 
-            if math.isnan(log_return) or math.isinf(log_return):
-                log_return = 0
+    def _calculate_reward(self, strategy_log_return, benchmark_log_return):
+        # Compare strategy performance with benchmark
+        beat_benchmark = strategy_log_return - benchmark_log_return
 
-            reward = log_return
-        else:
-            reward = 0
+        # Base reward is the logarithmic return of the strategy
+        reward = strategy_log_return + beat_benchmark
 
-        self.last_portfolio_value = current_portfolio_value
-
-        if self.rendering:
-            self.portfolio_value_history.append(current_portfolio_value)
-
+        # Scale reward
         return reward * 100
+
+    def _calculate_log_return(self, current_portfolio_value):
+        if self.last_portfolio_value <= 0:
+            return 0
+        strategy_log_return = math.log(
+            current_portfolio_value / self.last_portfolio_value)
+        # Update last portfolio value for next calculation
+        self.last_portfolio_value = current_portfolio_value
+        return 0 if math.isnan(strategy_log_return) or math.isinf(strategy_log_return) else strategy_log_return
+
+    def _calculate_benchmark_log_return(self):
+        cumulative_log_return = np.array([self.time_series_data[symbol]['log_pct_change'][self.current_step]
+                                          for symbol in self.time_series_data], dtype=np.float32)
+        return cumulative_log_return.mean()
+
+    def _update_running_totals(self, strategy_log_return, benchmark_log_return):
+        log_return_percentage = (np.exp(strategy_log_return) - 1) * 100
+        benchmark_performance_percentage = (
+            np.exp(benchmark_log_return) - 1) * 100
+        self.running_strategy += log_return_percentage
+        self.running_benchmark += benchmark_performance_percentage
+
+    def _update_rendering_history(self, current_portfolio_value):
+        self.portfolio_value_history.append(current_portfolio_value)
+        self.strategy_history.append(self.running_strategy)
+        self.benchmark_history.append(self.running_benchmark)
 
     def initialize_pygame(self):
         self.window_size = 800
@@ -520,94 +553,89 @@ class TradingGameEnv(gym.Env):
             (self.window_size, self.window_size))
         self.clock = pygame.time.Clock()
 
-    def _draw_action_space(self):
-        bar_chart_width = self.window_size
-        bar_chart_height = self.window_size // 8  # 1/8th of the height
-        bar_chart_x = 0
-        bar_chart_y = self.window_size - (bar_chart_height * 2)  # 7th eighth
-
-        # Background for the bar chart area (optional, for better visibility)
-        pygame.draw.rect(self.screen, (220, 220, 220), (bar_chart_x,
-                                                        bar_chart_y, bar_chart_width, bar_chart_height))
-
-        # Number of symbols and width for each bar
-        num_symbols = len(self.action_space_history[-1])
-        bar_width = bar_chart_width / num_symbols
-
-        for i, ratio in enumerate(self.action_space_history[-1]):
-            # Calculate the height of the bar based on the holdings ratio
-            bar_height = ratio * bar_chart_height
-
-            # Calculate the position of the bar
-            x = bar_chart_x + i * bar_width
-            y = bar_chart_height - bar_height + bar_chart_y  # Adjust y-position
-
-            # Draw the bar
-            pygame.draw.rect(self.screen, (0, 128, 0),
-                             (x, y, bar_width, bar_height))  # Green bars
-
-            # # Optional: Draw labels for each bar
-            # font = pygame.font.SysFont(None, 24)
-            # label = font.render(f'Symbol {i+1}', True, (0, 0, 0))
-            # # Adjust label position as needed
-            # self.screen.blit(label, (x + 5, bar_chart_height - 20))
-
     def _draw_holdings_ratio_chart(self):
-        # Define the size and position of the bar chart area
+        # Adjust the size and position of the bar chart area to take up the remaining bottom section
         bar_chart_width = self.window_size  # Span the entire width of the window
-        bar_chart_height = self.window_size // 8  # Maintain reduced height
+        # Increased height to take up the remaining space
+        bar_chart_height = self.window_size // 4
         bar_chart_x = 0  # Start from the left edge of the window
-        bar_chart_y = self.window_size - bar_chart_height  # Position at the bottom half
+        bar_chart_y = self.window_size - bar_chart_height  # Position at the bottom
 
-        # Background for the bar chart area (optional, for better visibility)
+        # Background for the bar chart area
         pygame.draw.rect(self.screen, (220, 220, 220), (bar_chart_x,
-                                                        bar_chart_y, bar_chart_width, bar_chart_height))
+                         bar_chart_y, bar_chart_width, bar_chart_height))
 
         # Number of symbols and width for each bar
-        num_symbols = len(self.holdings_ratio_history[-1])
+        num_symbols = len(self.time_series_data.keys())
         bar_width = bar_chart_width / num_symbols
 
-        for i, ratio in enumerate(self.holdings_ratio_history[-1]):
+        for i, ratio in enumerate(abs(self.order_history[symbol]['holdings_ratio']) for symbol in self.time_series_data.keys()):
             # Calculate the height of the bar based on the holdings ratio
             bar_height = ratio * bar_chart_height
 
             # Calculate the position of the bar
             x = bar_chart_x + i * bar_width
-            y = bar_chart_height - bar_height + bar_chart_y  # Adjust y-position
+            y = bar_chart_y + bar_chart_height - bar_height  # Adjust y-position for the bar
 
             # Draw the bar
             pygame.draw.rect(self.screen, (0, 128, 0),
-                             (x, y, bar_width, bar_height))  # Green bars
+                             (x, y, bar_width, bar_height))
 
-            # # Optional: Draw labels for each bar
-            # font = pygame.font.SysFont(None, 24)
-            # label = font.render(f'Symbol {i+1}', True, (0, 0, 0))
-            # # Adjust label position as needed
-            # self.screen.blit(label, (x + 5, bar_chart_height - 20))
+            # Draw labels for each bar
+            font = pygame.font.SysFont(None, 12)
+            label = font.render(self.symbol_names[i], True, (0, 0, 0))
+            label_x = x + (bar_width - label.get_width()) / \
+                2  # Center the label in the bar
+            label_y = y - 20  # Position the label 20 pixels above the bar
+            self.screen.blit(label, (label_x, label_y))
 
     def _draw_portfolio_value_chart(self):
-        # Assuming self.portfolio_value_history is a list of portfolio values
-        max_value = max(self.portfolio_value_history)
-        min_value = min(self.portfolio_value_history)
-        normalized_values = [(value - min_value) / (max_value - min_value)
-                             for value in self.portfolio_value_history]
+        # Find the maximum value from both histories
+        max_value = max(max(self.strategy_history),
+                        max(self.benchmark_history))
+        min_value = min(min(self.strategy_history),
+                        min(self.benchmark_history))
 
-        # Adjust the chart area to occupy the top 6/8th of the window
+        # Normalize strategy values
+        normalized_strategy_values = [(value - min_value) / (max_value - min_value)
+                                      for value in self.strategy_history]
+
+        # Normalize benchmark values
+        normalized_benchmark_values = [(value - min_value) / (max_value - min_value)
+                                       for value in self.benchmark_history]
+
+        # Adjust the chart area
         chart_height = self.window_size * (6 / 8)
 
-        for i in range(len(normalized_values) - 1):
-            start_pos = (i * (self.window_size / len(self.portfolio_value_history)),
-                         chart_height * (1 - normalized_values[i]))
-            end_pos = ((i + 1) * (self.window_size / len(self.portfolio_value_history)),
-                       chart_height * (1 - normalized_values[i + 1]))
-            pygame.draw.line(self.screen, (0, 0, 255),
-                             start_pos, end_pos, 2)
+        # Plot strategy line
+        for i in range(len(normalized_strategy_values) - 1):
+            start_pos = (i * (self.window_size / len(self.strategy_history)),
+                         chart_height * (1 - normalized_strategy_values[i]))
+            end_pos = ((i + 1) * (self.window_size / len(self.strategy_history)),
+                       chart_height * (1 - normalized_strategy_values[i + 1]))
+            pygame.draw.line(self.screen, (0, 0, 255), start_pos, end_pos, 2)
+
+        # Plot benchmark line
+        for i in range(len(normalized_benchmark_values) - 1):
+            start_pos = (i * (self.window_size / len(self.benchmark_history)),
+                         chart_height * (1 - normalized_benchmark_values[i]))
+            end_pos = ((i + 1) * (self.window_size / len(self.benchmark_history)),
+                       chart_height * (1 - normalized_benchmark_values[i + 1]))
+            pygame.draw.line(self.screen, (255, 0, 0), start_pos, end_pos, 2)
+
+        # Draw legend
+        font = pygame.font.SysFont(None, 24)
+        strategy_label = font.render('Strategy (Blue)', True, (0, 0, 255))
+        benchmark_label = font.render('Benchmark (Red)', True, (255, 0, 0))
+        self.screen.blit(strategy_label, (10, 10))  # Adjust position as needed
+        # Adjust position as needed
+        self.screen.blit(benchmark_label, (10, 35))
 
     def render(self, done=False, mode='human'):
         if mode == 'human':
             self.screen.fill((255, 255, 255))  # Clear screen (fill with white)
 
-            self._draw_action_space()
+            # self._draw_action_space()
             self._draw_portfolio_value_chart()
             self._draw_holdings_ratio_chart()
 
