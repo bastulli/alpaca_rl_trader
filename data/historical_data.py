@@ -37,7 +37,10 @@ def create_table(table_name='stock_data'):
                 ticker TEXT,
                 timestamp DATETIME,
                 volume INTEGER,
-                price REAL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
                 PRIMARY KEY (ticker, timestamp)
             );
         ''')
@@ -47,7 +50,7 @@ def create_table(table_name='stock_data'):
 def batch_insert_data(conn, data, table_name='stock_data'):
     with conn:
         conn.executemany(
-            f'INSERT OR REPLACE INTO {table_name} (ticker, timestamp, volume, price) VALUES (?, ?, ?, ?)', data)
+            f'INSERT OR REPLACE INTO {table_name} (ticker, timestamp, volume, open, high, low, close) VALUES (?, ?, ?, ?, ?, ?, ?)', data)
 
 
 def fetch_data_for_ticker(ticker, start_date, end_date, frequency=TimeFrequency.DAY, table_name='stock_data'):
@@ -99,10 +102,14 @@ def fetch_data_for_ticker(ticker, start_date, end_date, frequency=TimeFrequency.
                 date = date_time.strftime('%Y-%m-%d %H:%M:%S')
 
                 volume = freq['v']
-                price = freq['c']
+                open = freq['o']
+                high = freq['h']
+                low = freq['l']
+                close = freq['c']
 
                 # Add the data to the batch list
-                batch_data.append((ticker, date, volume, price))
+                batch_data.append(
+                    (ticker, date, volume, open, high, low, close))
 
             # Batch insert when a certain size is reached or at the end of data
             if start >= end_date - timedelta(days=1) or len(batch_data) >= 1000 or batch_end_date == end_date:
@@ -147,6 +154,7 @@ def fetch_all_data(symbols, days=90, table_name='stock_data', frequency=TimeFreq
         if date_range is not None and not date_range['end_date'] is None and not date_range['start_date'] is None:
             start_of_database = datetime.strptime(
                 date_range['start_date'], '%Y-%m-%d %H:%M:%S')
+
             end_of_database = datetime.strptime(
                 date_range['end_date'], '%Y-%m-%d %H:%M:%S')
 
@@ -155,8 +163,9 @@ def fetch_all_data(symbols, days=90, table_name='stock_data', frequency=TimeFreq
 
             # Update the start date for downloading only missing data
             if end_date > end_of_database and not redownload:
-                start_date = end_of_database + timedelta(days=1)
-                print(f"Updating data, adding missing days for {ticker}")
+                start_date = end_of_database  # + timedelta(days=1)
+                print(f"Updating data for {ticker}")
+
             elif end_date <= end_of_database:
                 print(f"No new data to download for {ticker}")
                 continue
@@ -172,7 +181,7 @@ def fetch_all_data(symbols, days=90, table_name='stock_data', frequency=TimeFreq
         # Schedule the task
         tasks.append((ticker, start_date, end_date))
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         for ticker, start, end in tasks:
             executor.submit(fetch_data_for_ticker, ticker,
                             start, end, frequency, table_name)
@@ -185,7 +194,8 @@ if __name__ == '__main__':
     # Using list comprehension to modify each element in the list
     symbols = ['X:' + symbol + 'USD' for symbol in crypto_symbols]
 
-    table_name = 'crypto_data_hourly'  # 'stock_data' is the default table name
+    # 'stock_data' is the default table name
+    table_name = 'crypto_data_hourly'
     create_table(table_name)
-    fetch_all_data(symbols, days=90, table_name=table_name,
+    fetch_all_data(symbols, days=30, table_name=table_name,
                    frequency=TimeFrequency.HOUR)

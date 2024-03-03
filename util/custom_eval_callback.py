@@ -18,7 +18,7 @@ class EvalCallback(BaseCallback):
     def _on_step(self) -> bool:
         if self.n_calls % self.eval_freq == 0:
             mean_reward, _ = evaluate_policy(
-                self.model, self.eval_env, n_eval_episodes=2, deterministic=self.deterministic, render=self.render)
+                self.model, self.eval_env, n_eval_episodes=1, deterministic=self.deterministic, render=self.render)
             # round mean reward for logging purposes
             mean_reward = round(mean_reward, 2)
             if mean_reward > self.best_mean_reward:

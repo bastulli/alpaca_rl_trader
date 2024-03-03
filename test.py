@@ -8,18 +8,20 @@ import matplotlib.pyplot as plt
 # Configuration parameters
 FRAMESTACK = 5  # Number of stacked frames (history)
 MODEL_TYPE = "PPO"
-MODEL_TIMESTAMP = "1704751113"  # Replace with the specific model timestamp
+MODEL_TIMESTAMP = "1708964508"  # Replace with the specific model timestamp
 # Replace with the specific best model number
-BEST_MODEL_NUMBER = "79_5"
+BEST_MODEL_NUMBER = "986_76"
 
 # Paths setup
 models_dir = f"models/{MODEL_TYPE}-{MODEL_TIMESTAMP}"
 best_model_path = os.path.join(
-    models_dir, f"PPO_4240000_steps.zip")
+    models_dir, f"best_models/best_model_{BEST_MODEL_NUMBER}.zip")
 
 # Features and symbols setup
-features = ['f_percentage_change_zscore', 'f_dollar_volume_zscore', 'f_fractional_difference_price', 'f_vmar',
-            'f_cumulative_return', 'f_log_pct_change', 'f_rsi', 'f_bbands', 'f_macd', 'f_obv', 'f_historical_volatility']
+features = ['f_month_dist', 'f_month_high', 'f_month_low', 'f_half_month_dist',
+            'f_half_month_high', 'f_half_month_low', 'f_week_dist', 'f_week_high',
+            'f_week_low', 'f_day_dist', 'f_day_high', 'f_day_low', 'f_hour_dist',
+            'f_hour_high', 'f_hour_low', 'f_price_ema_1', 'f_price_ema_2', 'f_price_ema_3']
 
 # symbols = ['AAPL',  # Apple
 #            'MSFT',  # Microsoft
@@ -59,7 +61,7 @@ table_name = 'crypto_data_hourly'
 
 # Load test data
 test_data = load_data(
-    ratio=0.8, split_option=SplitOption.TEST_SPLIT, symbols=symbols, table_name=table_name)
+    ratio=0.8, split_option=SplitOption.TRAIN_SPLIT, symbols=symbols, table_name=table_name)
 
 # Create the environment with test data
 env = TradingGameEnv(data=test_data, features=features,
@@ -69,7 +71,7 @@ env = TradingGameEnv(data=test_data, features=features,
 model = PPO.load(best_model_path, env=env)
 
 # Testing the model
-obs, _ = env.reset(random_reset=False)
+obs, _ = env.reset()
 done = False
 
 try:
@@ -78,7 +80,7 @@ try:
             action, _states = model.predict(obs, deterministic=True)
             obs, rewards, done, _, info = env.step(action)
             # Uncomment to see step and reward info
-            # print(f"Step: {env.current_step}, Reward: {rewards}")
+            print(f"Step: {env.current_step}, Reward: {rewards}")
 
         # Uncomment to render the environment
         env.render()

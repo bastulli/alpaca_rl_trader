@@ -9,6 +9,7 @@ class SplitOption(Enum):
     NO_SPLIT = 0
     TRAIN_SPLIT = 1
     TEST_SPLIT = 2
+    LIVE_MODE = 3
 
 
 def load_data(ratio=0.8, split_option=SplitOption.NO_SPLIT, symbols=[], trim_data=True, table_name='stock_data'):
@@ -44,6 +45,11 @@ def load_data(ratio=0.8, split_option=SplitOption.NO_SPLIT, symbols=[], trim_dat
     except (sqlite3.Error, pd.io.sql.DatabaseError) as e:
         print(f"Error connecting to database or executing query: {e}")
         return {}
+
+    # If LIVE_MODE, load only the last 200 data points for each symbol
+    if split_option == SplitOption.LIVE_MODE:
+        df = pd.concat([df.loc[ticker].tail(200) for ticker in tickers],
+                       keys=tickers, names=['ticker', 'timestamp'])
 
     # Sort the DataFrame and generate features
     df.sort_index(inplace=True)

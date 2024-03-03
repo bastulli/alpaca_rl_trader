@@ -17,40 +17,18 @@ from util.custom_eval_callback import EvalCallback
 # Configuration parameters and hyperparameters
 FRAMESTACK = 5  # Number of stacked frames (history)s
 BATCH_SIZE = 64
-DENSE_LAYER_SIZE = 32
-LEARNING_RATE = 0.0001
-TOTAL_TIMESTEPS = 5000000
+DENSE_LAYER_SIZE = 64
+LEARNING_RATE = 0.0003
+TOTAL_TIMESTEPS = 1000000
 
-features = ['f_percentage_change_zscore', 'f_dollar_volume_zscore', 'f_fractional_difference_price', 'f_vmar',
-            'f_cumulative_return', 'f_log_pct_change', 'f_rsi', 'f_bbands', 'f_macd', 'f_obv', 'f_historical_volatility']
-
-# symbols = ['AAPL',  # Apple
-#            'MSFT',  # Microsoft
-#            'INTC',  # Intel
-#            'NVDA',  # Nvidia
-#            'JPM',   # JPMorgan Chase
-#            'GS',    # Goldman Sachs
-#            'BAC',   # Bank of America
-#            'KO',    # Coca-Cola
-#            'PEP',   # PepsiCo
-#            'PG',    # Procter & Gamble
-#            'WMT',   # Walmart
-#            'PFE',   # Pfizer
-#            'JNJ',   # Johnson & Johnson
-#            'MRK',   # Merck
-#            'XOM',   # ExxonMobil
-#            'CVX',   # Chevron
-#            'BP',    # BP
-#            'AMZN',  # Amazon
-#            'BABA',  # Alibaba
-#            'T',     # AT&T
-#            'VZ',    # Verizon
-#            'DUK',   # Duke Energy
-#            'SO',    # Southern Company
-#            'TSLA',  # Tesla
-#            'GM',    # General Motors
-#            'F',     # Ford
-#            'BA']    # Boeing
+features = [
+    'f_month_high', 'f_month_low',
+    'f_half_month_high', 'f_half_month_low',
+    'f_week_high', 'f_week_low',
+    'f_day_high', 'f_day_low',
+    'f_hour_high', 'f_hour_low',
+    'f_price_ema_1', 'f_price_ema_2', 'f_price_ema_3'
+]
 
 crypto_symbols = ['BAT', 'BCH', 'BTC', 'CRV',
                   'DOT', 'ETH', 'GRT', 'LINK', 'LTC', 'MKR', 'UNI', 'XTZ']
@@ -60,16 +38,17 @@ symbols = ['X:' + symbol + 'USD' for symbol in crypto_symbols]
 
 table_name = 'crypto_data_hourly'
 
-# Add unrealized_pl_array, holdings_array, max_drawdown_array
+# Add unrealized_pl_array, holdings_array
 NUM_FEATURES = len(features) + 3
 NUM_STOCK_SYMBOLS = len(symbols)
 
 # Define the observation space
-observation_space = spaces.Box(
-    low=-np.inf, high=np.inf,
-    shape=(NUM_STOCK_SYMBOLS, NUM_FEATURES, FRAMESTACK),
-    dtype=np.float32
-)
+observation_space = spaces.Dict({
+    "stacked_obs": spaces.Box(low=-1, high=1, shape=(NUM_STOCK_SYMBOLS, NUM_FEATURES, FRAMESTACK), dtype=np.float32),
+    "holdings_array": spaces.Box(low=-1, high=1, shape=(NUM_STOCK_SYMBOLS,), dtype=np.float32),
+    "unrealized_pl_array": spaces.Box(low=-1, high=1, shape=(NUM_STOCK_SYMBOLS,), dtype=np.float32)
+})
+
 
 # Creating directories for models and logs
 model_type = "PPO"
@@ -83,8 +62,13 @@ os.makedirs(logdir, exist_ok=True)
 # Neural Network and TensorBoard setup
 model_temp = CustomNetwork(
     observation_space=observation_space, features_dim=DENSE_LAYER_SIZE)
-mock_observation = torch.rand(
-    BATCH_SIZE, NUM_STOCK_SYMBOLS, NUM_FEATURES, FRAMESTACK)
+
+# Creating a mock observation that matches the expected dictionary structure
+mock_observation = {
+    "stacked_obs": torch.rand(BATCH_SIZE, NUM_STOCK_SYMBOLS, NUM_FEATURES, FRAMESTACK),
+    "holdings_array": torch.rand(BATCH_SIZE, NUM_STOCK_SYMBOLS),
+    "unrealized_pl_array": torch.rand(BATCH_SIZE, NUM_STOCK_SYMBOLS)
+}
 
 # Model information and TensorBoard logging
 writer = SummaryWriter(logdir)
@@ -102,10 +86,12 @@ test_data = load_data(
     ratio=0.8, split_option=SplitOption.TEST_SPLIT, symbols=symbols, table_name=table_name)
 
 # Environment setup
-env = TradingGameEnv(data=train_data, features=features, framestack=FRAMESTACK)
+env = TradingGameEnv(data=train_data, features=features,
+                     framestack=FRAMESTACK, random_reset=True)
+
 test_env = TradingGameEnv(
-    data=test_data, features=features, framestack=FRAMESTACK)
-test_env.reset(random_reset=False)
+    data=test_data, features=features, framestack=FRAMESTACK, random_reset=False)
+
 check_env(env)  # Optional: Check if the environment follows the Gym interface
 
 # PPO model setup
@@ -114,8 +100,12 @@ policy_kwargs = {
     "features_extractor_kwargs": {"features_dim": DENSE_LAYER_SIZE}
 }
 
-model = PPO('CnnPolicy', env, verbose=1, learning_rate=LEARNING_RATE, n_steps=2048,
-            tensorboard_log=logdir, batch_size=BATCH_SIZE, policy_kwargs=policy_kwargs)
+model = PPO('MultiInputPolicy', env, verbose=1, learning_rate=LEARNING_RATE, n_steps=2048,
+            batch_size=BATCH_SIZE, n_epochs=10, gae_lambda=0.95, clip_range=0.2,
+            normalize_advantage=True, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5,
+            use_sde=True, sde_sample_freq=21, tensorboard_log=logdir,
+            policy_kwargs=policy_kwargs, gamma=0.999)
+
 
 # Callbacks for model saving and evaluation
 checkpoint_callback = CheckpointCallback(

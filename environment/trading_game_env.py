@@ -6,16 +6,19 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from collections import deque, OrderedDict
+import scipy
+from scipy.stats import norm
 
 
 class TradingGameEnv(gym.Env):
-    def __init__(self, data, initial_balance=100000.0, transaction_cost=0.00025, framestack=10, features=[], live_trader=None, verbose=False, rendering=False):
+    def __init__(self, data, initial_balance=100000.0, transaction_cost=0.0025, framestack=10, features=[], live_trader=None, verbose=False, rendering=False, random_reset=False):
         super(TradingGameEnv, self).__init__()
         self.verbose = verbose
         self.rendering = rendering
         self.frame_stack = framestack
         self.features = features
-        # Add unrealized_pl_array, holdings_array, max_drawdown
+        self.random_reset = random_reset
+        # Add unrealized_pl_array, holdings_array, actions
         self.num_features = len(features) + 3
         self.min_dollar_value = 100.0
 
@@ -29,10 +32,11 @@ class TradingGameEnv(gym.Env):
 
         # Add live trader instance
         self.live_trader = live_trader
+        self.init_sync = True
 
         # Get the first ticker key from the sorted dictionary
         first_ticker = next(iter(self.time_series_data))
-        self.length_of_data = len(self.time_series_data[first_ticker]['price'])
+        self.length_of_data = len(self.time_series_data[first_ticker]['close'])
         self.number_of_symbols = len(self.time_series_data.keys())
         self.observations = deque(maxlen=self.frame_stack)
 
@@ -43,14 +47,9 @@ class TradingGameEnv(gym.Env):
         self.action_space = spaces.Box(low=-1, high=1, shape=(
             self.number_of_symbols,), dtype=np.float32)
 
-        # Define the observation space
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(self.number_of_symbols, self.num_features, self.frame_stack),
-            dtype=np.float32
-
-        )
+        self.observation_space = spaces.Dict({
+            "stacked_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.number_of_symbols, self.num_features, self.frame_stack), dtype=np.float32),
+        })
 
         if self.rendering:
             self.initialize_pygame()
@@ -74,24 +73,38 @@ class TradingGameEnv(gym.Env):
         # Compute average performance of an evenly split portfolio
         benchmark_log_return = self._calculate_benchmark_log_return()
 
+        self.strategy_returns_list.append(strategy_log_return)
+        self.benchmark_returns_list.append(benchmark_log_return)
+
         # Calculate current drawdown
-        self.max_drawdown = self._calculate_drawdown(current_portfolio_value)
+        drawdown = self._calculate_drawdown(current_portfolio_value)
+
+        # Update max drawdown
+        if drawdown > self.max_drawdown:
+            self.max_drawdown = drawdown
+
+        self.drawdown_with_decay += drawdown
+        self.drawdown_with_decay *= 0.5
 
         # Update running totals and history for strategy and benchmark
         self._update_running_totals(strategy_log_return, benchmark_log_return)
 
         # Calculate reward
-        reward = self._calculate_reward(
-            strategy_log_return, benchmark_log_return)
+        reward = self._calculate_reward()
+        # reward = strategy_log_return * 100
+
         self.cumulative_reward += reward
 
         # make sure its after reward calculation
         self.last_portfolio_value = current_portfolio_value
 
+        self._update_rendering_history(current_portfolio_value)
+
         # Update history for rendering if enabled
         if self.rendering:
             self.action_space_history.append(action)
-            self._update_rendering_history(current_portfolio_value)
+            self.strategy_returns.append(self.running_strategy)
+            self.benchmark_returns.append(self.running_benchmark)
 
         # Get the next observation
         obs = self.next_observation(self.current_step)
@@ -128,20 +141,37 @@ class TradingGameEnv(gym.Env):
             # Print the performance
             print(f"Total Reward: {self.cumulative_reward:.2f}")
             print(f"Total Portfolio Value: {total_portfolio_value:.2f}")
-            print(f"Percentage Gain/Loss: {percentage_change:.2f}%")
+            print(f"Strategy: {percentage_change:.2f}%")
             print(f"Benchmark: {average_performance_percentage:.2f}%")
             print(
                 f"Beat Benchmark: {(percentage_change - average_performance_percentage):.2f}%")
             print(f"Maximum Drawdown: {self.max_drawdown*100:.2f}%")
 
-        return obs, reward, done, False, {}
+        info = {'portfolio': current_portfolio_value,
+                'step': self.current_step,
+                'strategy_return': self.running_strategy,
+                'benchmark_return': self.running_benchmark,
+                'reward': reward,
+                'cumulative_reward': self.cumulative_reward,
+                'max_drawdown': self.max_drawdown,
+                'action': action,
+                'holdings_ratio': np.array([self.order_history[symbol]['holdings_ratio'] for symbol in self.time_series_data.keys()]).flatten(),
+                'unrealized_pl': np.array([self.order_history[symbol]['unrealized_pl'] for symbol in self.time_series_data.keys()]).flatten(),
+                'obs': obs,
+                'date': self.time_series_data[self.symbol_names[-1]]['date'][self.current_step],
+                'symbols': self.symbol_names,
+                'trades': self.trades,
+                'order_history': self.order_history,
+                }
 
-    def reset(self, seed=None, options=None, random_reset=True):
+        return obs, reward, done, False, info
+
+    def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
         if self.live_trader is None:
             # Reset the current step
-            if random_reset:
+            if self.random_reset:
                 self.current_step = np.random.randint(
                     self.frame_stack, self.length_of_data - 2)
                 print(f"Random reset to step {self.current_step}")
@@ -165,10 +195,14 @@ class TradingGameEnv(gym.Env):
                 'unrealized_pl': 0,
                 'holdings_ratio': 0,
                 'prev_unrealized_pl': 0,
-                'percentage_change': 0
+                'percentage_change': 0,
+                'max_drawdown': 0,
+                'max_unrealized': 0,
+                'total_invested': 0,
 
             } for symbol in self.time_series_data.keys()
         }
+        self.trades = []
 
         # Reset the cumulative reward and max drawdown
         self.cumulative_reward = 0
@@ -176,16 +210,28 @@ class TradingGameEnv(gym.Env):
         self.highest_portfolio_value = 0
         self.running_benchmark = 0
         self.running_strategy = 0
+        self.last_action = -1 * np.ones(self.number_of_symbols)
+        self.symbols_log_return = np.zeros(self.number_of_symbols)
 
         # Reset tracking for visualization (rendering)
-        self.portfolio_value_history = []
-        self.benchmark_history = []
-        self.strategy_history = []
-        self.holdings_ratio_history = []
-        self.action_space_history = []
-
+        self.portfolio_value_history = []  # deque(maxlen=250)
+        self.benchmark_history = []  # deque(maxlen=250)
+        self.strategy_history = []  # deque(maxlen=250)
+        self.holdings_ratio_history = []  # deque(maxlen=250)
+        self.action_space_history = []  # deque(maxlen=250)
+        self.benchmark_returns = []  # deque(maxlen=250)
+        self.strategy_returns = []  # deque(maxlen=250)
         # Reset the observations deque
         self.observations = deque(maxlen=self.frame_stack)
+
+        # Reset reward mean
+        self.sparse_reward = 0
+        self.std_dev_strategy_returns = 0
+        self.risk_free_rate = 0
+        self.strategy_returns_list = []
+        self.benchmark_returns_list = []
+        self.drawdown_with_decay = 0
+        self.reward_mean_list = deque(maxlen=24)
 
         # warmup up self.frame_stack
         for i in range(self.frame_stack):
@@ -196,29 +242,40 @@ class TradingGameEnv(gym.Env):
 
     def update_data(self, new_data):
         # Sort data_dict by its keys
-        # Update self.time_series_data with new_data
+        # replace self.time_series_data with new_data
         self.time_series_data = OrderedDict(sorted(new_data.items()))
+
+    def convert_cyrpto_ticker_symbol(self, symbol):
+        if 'USD' in symbol and not 'X:' in symbol:
+            return 'X:' + symbol
+        else:
+            raise ValueError("Invalid symbol format - 'USD' not found")
 
     def sync_with_live_trader(self):
         account_info = self.live_trader.get_account()
-        self.initial_balance = float(account_info.cash)
+
         self.balance = float(account_info.cash)
+        if self.init_sync:  # only update initial balance on first sync
+            self.initial_balance = float(account_info.cash)
+            self.last_portfolio_value = float(account_info.portfolio_value)
+            self.max_portfolio_value = self.last_portfolio_value
+            self.init_sync = False
 
         # Update order history based on live trader information
         # You might need to adjust this based on how your live trader tracks orders
         positions = self.live_trader.get_all_positions()
         for position in positions:
-            symbol = position.symbol
+            symbol = self.convert_cyrpto_ticker_symbol(position.symbol)
+            print(f"Syncing {symbol} with live trader...")
             self.order_history[symbol]['qty'] = float(position.qty)
             self.order_history[symbol]['avg_entry_price'] = float(
                 position.avg_entry_price)
 
     def next_observation(self, index=None):
+
         if index is None:
             index = self.current_step
-
         feature_arrays = []
-
         # Dynamic extraction of features
         for feature_name in self.features:
             feature_array = np.array([self.time_series_data[symbol][feature_name][index]
@@ -227,33 +284,23 @@ class TradingGameEnv(gym.Env):
 
         # get holdings ratio
         holdings_array = np.array([self.order_history[symbol]['holdings_ratio']
-                                  for symbol in self.time_series_data.keys()])
+                                   for symbol in self.time_series_data.keys()])
 
-        # Ensure the result is in float32 format
-        holdings_array = holdings_array.astype(np.float32)
+        holdings_array = self._bin_action_values(
+            holdings_array).astype(np.float32)
 
         # get unrealized P/L
-        unrealized_pl_array = np.array(
-            [self.order_history[symbol]['unrealized_pl'] for symbol in self.time_series_data.keys()]) * 10  # increase scale for ml
-
-        # Ensure the result is in float32 format
-        unrealized_pl_array = unrealized_pl_array.astype(np.float32)
-
-        # get pl percentage change
-        percentage_change = np.array(
-            [self.order_history[symbol]['percentage_change'] for symbol in self.time_series_data.keys()]) * 10  # increase scale for ml
-
-        # Ensure the result is in float32 format
-        percentage_change = percentage_change.astype(np.float32)
+        unrealized_pl_array = np.array([self.order_history[symbol]['unrealized_pl']
+                                        for symbol in self.time_series_data.keys()]).astype(np.float32)
 
         # Construct the observation array for the current step
         # Shape will be [num_features, num_symbols]
-        current_observation = np.stack(
-            [percentage_change, unrealized_pl_array, holdings_array] + feature_arrays, axis=0)
+        current_observation = np.clip(np.stack(
+            feature_arrays + [unrealized_pl_array, holdings_array, self.last_action], axis=0).astype(np.float32), -1, 1)
 
         # Transpose the observation to make it [num_symbols, num_features]
         current_observation = np.transpose(
-            np.clip(current_observation, -5, 5), (1, 0))
+            current_observation, (1, 0))
 
         # Add the current observation to the deque
         self.observations.append(current_observation)
@@ -271,12 +318,14 @@ class TradingGameEnv(gym.Env):
         if self.rendering:
             self.holdings_ratio_history.append(holdings_array)
 
-        return stacked_obs
+        return {
+            "stacked_obs": stacked_obs,
+        }
 
     def _get_holdings_ratio_for_symbol(self, symbol):
         # Calculate holdings ratio for a specific symbol
         total_portfolio_value = self._calculate_total_portfolio_value()
-        current_price = self.time_series_data[symbol]['price'][self.current_step]
+        current_price = self.time_series_data[symbol]['close'][self.current_step]
         current_investment = self.order_history[symbol]['qty'] * current_price
 
         holdings_ratio = current_investment / \
@@ -286,7 +335,7 @@ class TradingGameEnv(gym.Env):
     def _calculate_unrealized_pl_for_symbol(self, symbol):
         # Calculate unrealized P/L for a specific symbol
         qty = self.order_history[symbol]['qty']
-        current_price = self.time_series_data[symbol]['price'][self.current_step]
+        current_price = self.time_series_data[symbol]['close'][self.current_step]
         avg_entry_price = self.order_history[symbol]['avg_entry_price']
 
         # Calculate market values and total P/L
@@ -317,12 +366,19 @@ class TradingGameEnv(gym.Env):
         # Update the order history with the current unrealized P/L
         self.order_history[symbol]['prev_unrealized_pl'] = current_unrealized_pl
 
+        # track order history max drawdown
+        if percentage_change < 0:
+            self.order_history[symbol]['max_drawdown'] += percentage_change
+
+        # decay max drawdown
+        self.order_history[symbol]['max_drawdown'] = self.order_history[symbol]['max_drawdown'] * 0.95
+
         return percentage_change
 
     def _scale_action_vector(self, action_vector):
         # output is tanh, we want deadzone safespace between -0.5 and -1
         # Scale values from [-0.5, 1] to [0, 1]
-        min_value = -0.5
+        min_value = -0.75
         max_value = 1
 
         return np.clip((action_vector - min_value) / (max_value - min_value), 0, 1)
@@ -336,7 +392,6 @@ class TradingGameEnv(gym.Env):
 
     def _bin_action_values(self, action_vector):
         # Define the bin edges
-        # max is never 1 to dissallow 100% utilization of the portfolio
         bins = np.arange(0, 1.0, 0.025)
         action_vector_reshaped = action_vector.reshape(-1, 1)
         abs_diff = np.abs(action_vector_reshaped - bins)
@@ -345,7 +400,21 @@ class TradingGameEnv(gym.Env):
 
         return binned_action_vector
 
+    def _bin_single_values(self, value):
+        # Define the bin edges
+        bins = np.arange(0, 1.0, 0.025)
+        # Calculate the absolute difference between the value and each bin
+        abs_diff = np.abs(value - bins)
+        # Find the index of the closest bin
+        closest_bin_index = np.argmin(abs_diff)
+        # Get the value of the closest bin
+        binned_value = bins[closest_bin_index]
+        return binned_value
+
     def _take_action(self, action):
+
+        self.trades = []
+
         action = self._scale_action_vector(action)
         action = self._normalize_action_vector(action)
         action = self._bin_action_values(action)
@@ -360,8 +429,11 @@ class TradingGameEnv(gym.Env):
             desired_percentage = action[symbol_idx]
             current_percentage = self.order_history[symbol]['holdings_ratio']
 
+            current_percentage = self._bin_single_values(current_percentage)
+
             # Execute sell action if desired percentage less than current percentage
             if desired_percentage < current_percentage:
+
                 self._sell(symbol, desired_percentage, total_portfolio_value)
 
         # Next, process all buy actions
@@ -369,6 +441,7 @@ class TradingGameEnv(gym.Env):
             symbol = list(self.time_series_data.keys())[symbol_idx]
             desired_percentage = action[symbol_idx]
             current_percentage = self.order_history[symbol]['holdings_ratio']
+            current_percentage = self._bin_single_values(current_percentage)
 
             # Execute buy action if current holdings less than desired percentage
             if current_percentage < desired_percentage:
@@ -390,7 +463,7 @@ class TradingGameEnv(gym.Env):
         desired_percentage = np.clip(desired_percentage, 0, 1)
 
         # get the current price and quantity for symbol
-        current_price = self.time_series_data[symbol]["price"][self.current_step]
+        current_price = self.time_series_data[symbol]['close'][self.current_step]
         current_quantity = self.order_history[symbol]['qty']
         # Current dollar amount invested in this symbol
         current_dollar_amount = current_quantity * current_price
@@ -407,6 +480,11 @@ class TradingGameEnv(gym.Env):
         # Ensure we don't sell more than we have
         sell_quantity = min(sell_quantity, current_quantity)
 
+        liquidate = False
+        # write logic to check if sell quantity is everything or within threshold, if so, liquidate
+        if sell_quantity == current_quantity or sell_quantity / current_quantity > 0.98:
+            liquidate = True
+
         # Check if we are selling less than the minimum dollar value and it's not the entire holding
         if sell_dollar_amount < self.min_dollar_value and sell_quantity != current_quantity:
             if self.verbose:
@@ -416,7 +494,17 @@ class TradingGameEnv(gym.Env):
 
         # Use LiveTrader to execute the sell
         if self.live_trader and sell_quantity > 0:
-            self.live_trader.sell(symbol, sell_quantity)
+            try:
+                order = self.live_trader.sell(
+                    symbol, sell_quantity, current_price, liquidate=liquidate)
+
+                # Wait for order to be filled
+                if not self.live_trader.wait_for_order_fill(order.id):
+                    # If order is not filled within the MAX_RETRIES, cancel the order
+                    self.live_trader.cancel_order(order.id)
+            except Exception as e:
+                # Handle exceptions, such as connectivity issues or API errors
+                print(f"An error occurred when trying to sell: {e}")
 
         # Update the quantity in the dictionary
         self.order_history[symbol]['qty'] -= sell_quantity
@@ -425,8 +513,30 @@ class TradingGameEnv(gym.Env):
         self.balance += sell_dollar_amount - \
             (sell_dollar_amount * self.transaction_cost)
 
+        # Calculate the proportion of the position being sold
+        sell_proportion = sell_quantity / current_quantity if current_quantity > 0 else 0
+
+        # Update the total invested amount based on the proportion being sold
+        self.order_history[symbol]['total_invested'] *= (1 - sell_proportion)
+
         # Calculate realized profit or loss
         average_entry_price = self.order_history[symbol]['avg_entry_price']
+
+        current_date = self.time_series_data[symbol]['date'][self.current_step]
+
+        realized_profit = (current_price - average_entry_price) * \
+            sell_quantity - (sell_dollar_amount * self.transaction_cost)
+
+        # Append trade details including holding period
+        self.trades.append({
+            'symbol': symbol,
+            'qty': sell_quantity,
+            'close': current_price,
+            'cost': sell_dollar_amount,
+            'profit': realized_profit,
+            'date': current_date,
+            'side': 'sell'
+        })
 
         # Update the average entry price if all shares are sold
         if self.order_history[symbol]['qty'] <= 0:
@@ -435,19 +545,18 @@ class TradingGameEnv(gym.Env):
             self.order_history[symbol]['prev_unrealized_pl'] = 0
             self.order_history[symbol]['holdings_ratio'] = 0
             self.order_history[symbol]['unrealized_pl'] = 0
-
-        realized_profit = (current_price - average_entry_price) * \
-            sell_quantity - (sell_dollar_amount * self.transaction_cost)
+            self.order_history[symbol]['max_drawdown'] = 0
+            self.order_history[symbol]['max_unrealized'] = 0
 
         if self.verbose:
-            print(f"Sold {sell_quantity} shares of {symbol} at ${current_price:.2f} for a gain/loss of {realized_profit:.2f}, dollar amount: ${sell_dollar_amount:.2f}")
+            print(f"Sold {sell_quantity:.2f} shares of {symbol} at ${current_price:.2f} for a gain/loss of ${realized_profit:.2f}, dollar amount: ${sell_dollar_amount:.2f}")
 
     def _buy(self, symbol, desired_percentage, total_portfolio_value):
         # Clip the desired percentage to make sure it's between 0 and 1
         desired_percentage = np.clip(desired_percentage, 0, 1)
 
         # Current price for this symbol and current quantity
-        current_price = self.time_series_data[symbol]["price"][self.current_step]
+        current_price = self.time_series_data[symbol]['close'][self.current_step]
         current_quantity = self.order_history[symbol]['qty']
 
         # Current dollar amount invested in this symbol
@@ -471,23 +580,50 @@ class TradingGameEnv(gym.Env):
             return  # skip if we are selling less than min dollar value
 
         if total_cost <= self.balance and purchased_quantity > 0:
-
             # Use LiveTrader to execute the buy
             if self.live_trader:
-                self.live_trader.buy(symbol, purchased_quantity)
+                try:
+                    order = self.live_trader.buy(
+                        symbol, purchased_quantity, current_price)
+
+                    # Wait for order to be filled
+                    if not self.live_trader.wait_for_order_fill(order.id):
+                        # If order is not filled within the MAX_RETRIES, cancel the order
+                        self.live_trader.cancel_order(order.id)
+                except Exception as e:
+                    # Handle exceptions, such as connectivity issues or API errors
+                    print(
+                        f"An error occurred when trying to buy: {e}")
 
             self.balance -= total_cost
 
             # Update the average entry price and quantity directly in the dictionary
             total_quantity = current_quantity + purchased_quantity
+            date = self.time_series_data[symbol]['date'][self.current_step]
             self.order_history[symbol]['avg_entry_price'] = (
                 (self.order_history[symbol]['avg_entry_price'] * current_quantity) + additional_dollar_amount_needed) / total_quantity
-
             self.order_history[symbol]['qty'] = total_quantity
+
+            # Calculate the new total invested amount
+            new_total_invested = self.order_history[symbol]['total_invested'] + total_cost
+            date = self.time_series_data[symbol]['date'][self.current_step]
+
+            # Update the total invested amount
+            self.order_history[symbol]['total_invested'] = new_total_invested
+
+            self.trades.append({
+                'symbol': symbol,
+                'qty': purchased_quantity,
+                'close': current_price,
+                'cost': total_cost,
+                'profit': fee * -1,
+                'date': date,
+                'side': 'buy'
+            })
 
             if self.verbose:
                 print(
-                    f"Bought {purchased_quantity} shares of {symbol} at ${current_price:.2f} for a cost of ${total_cost:.2f}")
+                    f"Bought {purchased_quantity:.2f} shares of {symbol} at ${current_price:.2f} for a cost of ${total_cost:.2f}")
 
     def _calculate_total_portfolio_value(self):
         # Extract quantities and current prices for all symbols
@@ -495,7 +631,7 @@ class TradingGameEnv(gym.Env):
                               for symbol in self.time_series_data.keys()])
 
         current_prices = np.array(
-            [self.time_series_data[symbol]['price'][self.current_step] for symbol in self.time_series_data.keys()])
+            [self.time_series_data[symbol]['close'][self.current_step] for symbol in self.time_series_data.keys()])
 
         # Calculate total portfolio value
         portfolio_value = self.balance + np.sum(quantities * current_prices)
@@ -510,15 +646,84 @@ class TradingGameEnv(gym.Env):
                     current_portfolio_value) / self.highest_portfolio_value
         return drawdown if drawdown > 0 else 0  # Return only positive drawdowns
 
-    def _calculate_reward(self, strategy_log_return, benchmark_log_return):
-        # Compare strategy performance with benchmark
-        beat_benchmark = strategy_log_return - benchmark_log_return
+    def _calculate_log_drawdown(self, current_portfolio_value):
+        if current_portfolio_value > self.highest_portfolio_value:
+            self.highest_portfolio_value = current_portfolio_value
+        # Calculate logarithmic drawdown
+        log_drawdown = math.log(
+            current_portfolio_value / self.highest_portfolio_value)
+        # Return positive drawdowns; if you want to keep the drawdown negative, remove the abs() function
+        return abs(log_drawdown) if log_drawdown < 0 else 0
 
-        # Base reward is the logarithmic return of the strategy
-        reward = strategy_log_return + beat_benchmark
+    def _calculate_estimated_sharpe_ratio(self, returns_list):
+        if len(returns_list) > 0:
+            excess_returns = np.array(
+                returns_list) - self.risk_free_rate
+            sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns)
+            return sharpe_ratio if np.std(excess_returns) > 0 else 0
+        else:
+            return 0
 
-        # Scale reward
-        return reward * 100
+    def _calculate_skewness(self, returns_list):
+        if len(returns_list) > 2:
+            return scipy.stats.skew(returns_list)
+        else:
+            return 0
+
+    def _calculate_kurtosis(self, returns_list):
+        if len(returns_list) > 3:
+            # Using Fisher’s definition of kurtosis (kurtosis of the normal distribution is zero).
+            return scipy.stats.kurtosis(returns_list, fisher=True)
+        else:
+            return 0
+
+    def _calculate_reward(self):
+        reward = 0
+
+        # Sharpe Ratios
+        estimated_sr = self._calculate_estimated_sharpe_ratio(
+            self.strategy_returns_list)
+
+        benchmark_sr = self._calculate_estimated_sharpe_ratio(
+            self.benchmark_returns_list)  # Dynamic benchmark
+
+        # Skewness and Kurtosis
+        skewness = self._calculate_skewness(self.strategy_returns_list)
+        kurtosis = self._calculate_kurtosis(self.strategy_returns_list)
+
+        # Adjusting the PSR calculation
+        square_root_expression = max(
+            0, 1 - skewness * estimated_sr + (kurtosis - 1) / 4 * estimated_sr ** 2)
+        denominator = np.sqrt(square_root_expression)
+
+        if denominator != 0 and np.isfinite(denominator):
+            track_record_length = len(self.strategy_returns_list)
+            psr = norm.cdf(np.sqrt(track_record_length - 1) *
+                           (estimated_sr - benchmark_sr) / denominator)
+            psr = 0 if not np.isfinite(psr) else psr
+        else:
+            psr = 0
+
+        # Penalize for maximum drawdown and excessive trading
+        # or any other functional form
+        reward += self._scale_psr(float(psr))
+
+        return reward
+
+    def _scale_psr(self, normalized_psr):
+
+        # Define thresholds
+        threshold = 0.69  # 69% of the track record is positive
+
+        # Scale PSR
+        if normalized_psr >= threshold:
+            # Scale positive PSR to a suitable range, e.g., 0 to 1
+            scaled_psr = (normalized_psr - threshold) / (1 - threshold)
+        else:
+            # Scale negative PSR to a suitable range, e.g., -1 to 0
+            scaled_psr = normalized_psr / threshold - 1
+
+        return scaled_psr
 
     def _calculate_log_return(self, current_portfolio_value):
         if self.last_portfolio_value <= 0:
@@ -527,12 +732,14 @@ class TradingGameEnv(gym.Env):
             current_portfolio_value / self.last_portfolio_value)
         # Update last portfolio value for next calculation
         self.last_portfolio_value = current_portfolio_value
+
         return 0 if math.isnan(strategy_log_return) or math.isinf(strategy_log_return) else strategy_log_return
 
     def _calculate_benchmark_log_return(self):
-        cumulative_log_return = np.array([self.time_series_data[symbol]['log_pct_change'][self.current_step]
-                                          for symbol in self.time_series_data], dtype=np.float32)
-        return cumulative_log_return.mean()
+        self.symbols_log_return = np.array([self.time_series_data[symbol]['log_pct_change'][self.current_step]
+                                            for symbol in self.time_series_data], dtype=np.float32)
+
+        return self.symbols_log_return.mean()
 
     def _update_running_totals(self, strategy_log_return, benchmark_log_return):
         log_return_percentage = (np.exp(strategy_log_return) - 1) * 100
@@ -569,7 +776,7 @@ class TradingGameEnv(gym.Env):
         num_symbols = len(self.time_series_data.keys())
         bar_width = bar_chart_width / num_symbols
 
-        for i, ratio in enumerate(abs(self.order_history[symbol]['holdings_ratio']) for symbol in self.time_series_data.keys()):
+        for i, ratio in enumerate(self.order_history[symbol]['holdings_ratio'] for symbol in self.time_series_data.keys()):
             # Calculate the height of the bar based on the holdings ratio
             bar_height = ratio * bar_chart_height
 
@@ -640,7 +847,7 @@ class TradingGameEnv(gym.Env):
             self._draw_holdings_ratio_chart()
 
             pygame.display.flip()  # Update the full display Surface to the screen
-            self.clock.tick(60)  # Limit frames per second
+            self.clock.tick(120)  # Limit frames per second
 
             # Handle events
             for event in pygame.event.get():
